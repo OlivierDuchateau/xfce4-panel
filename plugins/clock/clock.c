@@ -84,10 +84,16 @@ static void     clock_plugin_screen_position_changed   (XfcePanelPlugin       *p
 static void     clock_plugin_configure_plugin          (XfcePanelPlugin       *panel_plugin);
 static void     clock_plugin_set_mode                  (ClockPlugin           *plugin);
 static void     clock_plugin_reposition_calendar       (ClockPlugin           *plugin);
+static GdkGrabStatus clock_plugin_grab_status_keyboard (ClockPlugin    *plugin,
+                                                        GdkWindow      *window,
+                                                        GdkEventButton *event);
+static GdkGrabStatus clock_plugin_grab_status_pointer  (ClockPlugin    *plugin,
+                                                        GdkWindow      *window,
+                                                        GdkEventButton *event);
 static gboolean clock_plugin_pointer_grab              (ClockPlugin           *plugin,
                                                         GtkWidget             *widget,
                                                         gboolean               keep,
-                                                        guint32                activate_time);
+                                                        GdkEventButton        *event);
 static void     clock_plugin_pointer_ungrab            (ClockPlugin           *plugin,
                                                         GtkWidget             *widget);
 static gboolean clock_plugin_calendar_pointed          (GtkWidget             *calendar_window,
@@ -449,7 +455,7 @@ clock_plugin_button_press_event (GtkWidget      *widget,
             {
               clock_plugin_popup_calendar (plugin);
               if (event->button == 1 && !(event->state & GDK_CONTROL_MASK))
-                clock_plugin_pointer_grab (plugin, GTK_WIDGET (plugin->calendar_window), TRUE, event->time);
+                clock_plugin_pointer_grab (plugin, GTK_WIDGET (plugin->calendar_window), TRUE, event);
             }
           else
             {
@@ -772,7 +778,9 @@ clock_plugin_configure_plugin_chooser_separator (GtkTreeModel *model,
 
 
 static void
-clock_plugin_validate_format_specifier (GtkEntry *entry, gchar *format, ClockPlugin *plugin)
+clock_plugin_validate_format_specifier (GtkEntry    *entry,
+                                        const gchar *format,
+                                        ClockPlugin *plugin)
 {
   GtkStyleContext *context;
 
@@ -787,8 +795,8 @@ clock_plugin_validate_format_specifier (GtkEntry *entry, gchar *format, ClockPlu
 
 
 static void
-clock_plugin_validate_entry_text (GtkEditable *entry,
-                                  gpointer user_data)
+clock_plugin_validate_entry_text (GtkEntry *entry,
+                                  gpointer  user_data)
 {
   ClockPlugin *plugin = user_data;
 
@@ -1182,6 +1190,56 @@ clock_plugin_calendar_show_event (GtkWidget   *calendar_window,
 
 
 
+static GdkGrabStatus
+clock_plugin_grab_status_keyboard (ClockPlugin    *plugin,
+                                   GdkWindow      *window,
+                                   GdkEventButton *event)
+{
+  GdkGrabStatus status;
+
+#if GTK_CHECK_VERSION (3, 20, 0)
+  status = gdk_seat_grab (gdk_device_get_seat (plugin->keyboard),
+                          window, GDK_SEAT_CAPABILITY_KEYBOARD,
+                          TRUE, NULL, (GdkEvent *) event,
+                          NULL, NULL);
+#else
+  status = gdk_device_grab (plugin->keyboard, window,
+                            GDK_OWNERSHIP_WINDOW, TRUE,
+                            GDK_KEY_PRESS_MASK | GDK_KEY_RELEASE_MASK,
+                            NULL, event->time);
+#endif
+
+  return status;
+}
+
+
+
+static GdkGrabStatus
+clock_plugin_grab_status_pointer (ClockPlugin    *plugin,
+                                  GdkWindow      *window,
+                                  GdkEventButton *event)
+{
+  GdkGrabStatus status;
+
+#if GTK_CHECK_VERSION (3, 20, 0)
+  status = gdk_seat_grab (gdk_device_get_seat (plugin->pointer),
+                          window, GDK_SEAT_CAPABILITY_POINTER,
+                          TRUE, NULL, (GdkEvent *) event,
+                          NULL, NULL);
+#else
+  status = gdk_device_grab (plugin->pointer, window,
+                            GDK_OWNERSHIP_WINDOW, TRUE,
+                            GDK_SMOOTH_SCROLL_MASK | GDK_BUTTON_PRESS_MASK
+                            | GDK_BUTTON_RELEASE_MASK | GDK_ENTER_NOTIFY_MASK
+                            | GDK_LEAVE_NOTIFY_MASK | GDK_POINTER_MOTION_MASK,
+                            NULL, event->time);
+#endif
+
+  return status;
+}
+
+
+
 static void
 clock_plugin_pointer_ungrab (ClockPlugin *plugin,
                              GtkWidget   *widget)
@@ -1190,13 +1248,21 @@ clock_plugin_pointer_ungrab (ClockPlugin *plugin,
 
   if (plugin->keyboard != NULL && plugin->keyboard_grabbed)
     {
+#if GTK_CHECK_VERSION (3, 20, 0)
+      gdk_seat_ungrab (gdk_device_get_seat (plugin->keyboard));
+#else
       gdk_device_ungrab (plugin->keyboard, GDK_CURRENT_TIME);
+#endif
       plugin->keyboard_grabbed = FALSE;
     }
 
   if (plugin->pointer != NULL && plugin->pointer_grabbed)
     {
+#if GTK_CHECK_VERSION (3, 20, 0)
+      gdk_seat_ungrab (gdk_device_get_seat (plugin->pointer));
+#else
       gdk_device_ungrab (plugin->pointer, GDK_CURRENT_TIME);
+#endif
       plugin->pointer_grabbed = FALSE;
     }
 }
@@ -1204,17 +1270,21 @@ clock_plugin_pointer_ungrab (ClockPlugin *plugin,
 
 
 static gboolean
-clock_plugin_pointer_grab (ClockPlugin *plugin,
-                           GtkWidget   *widget,
-                           gboolean     keep,
-                           guint32      activate_time)
+clock_plugin_pointer_grab (ClockPlugin    *plugin,
+                           GtkWidget      *widget,
+                           gboolean        keep,
+                           GdkEventButton *event)
 {
   GdkWindow        *window;
   gboolean          grabbed = FALSE;
   guint             i;
   GdkDisplay       *display;
+#if GTK_CHECK_VERSION (3, 20, 0)
+  GdkSeat          *seat;
+#else
   GdkDeviceManager *device_manager;
-  GList            *devices;
+#endif
+  GList            *devices = NULL;
 
   window = gtk_widget_get_window (widget);
 
@@ -1224,8 +1294,22 @@ clock_plugin_pointer_grab (ClockPlugin *plugin,
   if (plugin->device == NULL)
     {
       display = gtk_widget_get_display (widget);
+#if GTK_CHECK_VERSION (3, 20, 0)
+      seat = gdk_display_get_default_seat (display);
+      /* get the master device (only keyboard and pointer, e.g., mouse) */
+	  if (gdk_seat_get_capabilities (seat) == GDK_SEAT_CAPABILITY_POINTER)
+        {
+          devices = g_list_append (devices, gdk_seat_get_pointer (seat));
+        }
+
+	  if (gdk_seat_get_capabilities (seat) == GDK_SEAT_CAPABILITY_KEYBOARD)
+        {
+          devices = g_list_append (devices, gdk_seat_get_keyboard (seat));
+        }
+#else
       device_manager = gdk_display_get_device_manager (display);
       devices = gdk_device_manager_list_devices (device_manager, GDK_DEVICE_TYPE_MASTER);
+#endif
       plugin->device = devices->data;
       g_list_free (devices);
     }
@@ -1246,21 +1330,12 @@ clock_plugin_pointer_grab (ClockPlugin *plugin,
     {
       plugin->keyboard_grabbed =
         plugin->keyboard != NULL &&
-        gdk_device_grab (plugin->keyboard, window,
-                         GDK_OWNERSHIP_WINDOW, TRUE,
-                         GDK_KEY_PRESS_MASK | GDK_KEY_RELEASE_MASK,
-                         NULL, activate_time) == GDK_GRAB_SUCCESS;
+        clock_plugin_grab_status_keyboard (plugin, window, event) == GDK_GRAB_SUCCESS;
       if (plugin->keyboard_grabbed)
         {
           grabbed = plugin->pointer_grabbed =
             plugin->pointer != NULL &&
-            gdk_device_grab (plugin->pointer, window,
-                             GDK_OWNERSHIP_WINDOW, TRUE,
-                             GDK_SMOOTH_SCROLL_MASK |
-                             GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK |
-                             GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK |
-                             GDK_POINTER_MOTION_MASK,
-                             NULL, activate_time) == GDK_GRAB_SUCCESS;
+            clock_plugin_grab_status_pointer (plugin, window, event) == GDK_GRAB_SUCCESS;
           if (grabbed)
             break;
         }

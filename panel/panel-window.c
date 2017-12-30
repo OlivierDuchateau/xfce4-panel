@@ -30,6 +30,8 @@
 #include <string.h>
 #endif
 
+#include <gdk/gdk.h>
+
 #ifdef GDK_WINDOWING_X11
 #include <gdk/gdkx.h>
 #include <X11/Xlib.h>
@@ -1048,6 +1050,9 @@ panel_window_button_press_event (GtkWidget      *widget,
   GdkCursor     *cursor;
   GdkGrabStatus  status;
   GdkDisplay    *display;
+#if GTK_CHECK_VERSION (3, 20, 0)
+  GdkSeat       *seat;
+#endif
   guint          modifiers;
 
   /* leave if the event is not for this window */
@@ -1068,11 +1073,22 @@ panel_window_button_press_event (GtkWidget      *widget,
       cursor = gdk_cursor_new_for_display (display, GDK_FLEUR);
 
       /* grab the pointer for dragging the window */
+#if GTK_CHECK_VERSION (3, 20, 0)
+      seat = gdk_display_get_default_seat (display);
+
+      if (G_LIKELY (seat != NULL))
+        status = gdk_seat_grab (seat, event->window,
+                                GDK_SEAT_CAPABILITY_POINTER
+                                | GDK_SEAT_CAPABILITY_KEYBOARD,
+                                FALSE, cursor, (GdkEvent *) event,
+                                NULL, NULL);
+#else
       status = gdk_device_grab (event->device, event->window,
                                 GDK_OWNERSHIP_NONE, FALSE,
                                 GDK_BUTTON_MOTION_MASK
                                 | GDK_BUTTON_RELEASE_MASK,
                                 cursor, event->time);
+#endif
 
       g_object_unref (cursor);
 
@@ -1114,7 +1130,11 @@ panel_window_button_release_event (GtkWidget      *widget,
   if (window->grab_time != 0)
     {
       /* ungrab the pointer */
+#if GTK_CHECK_VERSION (3, 20, 0)
+      gdk_seat_ungrab (gdk_device_get_seat (event->device));
+#else
       gdk_device_ungrab (event->device, window->grab_time);
+#endif
       window->grab_time = 0;
 
       /* store the new position */
@@ -1678,7 +1698,7 @@ panel_window_screen_struts_set (PanelWindow *window)
   else if (window->struts_edge == STRUTS_EDGE_BOTTOM)
     {
       /* the window is snapped on the bottom screen edge */
-      struts[STRUT_BOTTOM] = gdk_screen_get_height (window->screen) - alloc->y;
+      struts[STRUT_BOTTOM] = HeightOfScreen (gdk_x11_screen_get_xscreen (window->screen)) - alloc->y;
       struts[STRUT_BOTTOM_START_X] = alloc->x;
       struts[STRUT_BOTTOM_END_X] = alloc->x + alloc->width - 1;
     }
@@ -1692,7 +1712,7 @@ panel_window_screen_struts_set (PanelWindow *window)
   else if (window->struts_edge == STRUTS_EDGE_RIGHT)
     {
       /* the window is snapped on the right screen edge */
-      struts[STRUT_RIGHT] = gdk_screen_get_width (window->screen) - alloc->x;
+      struts[STRUT_RIGHT] = WidthOfScreen (gdk_x11_screen_get_xscreen (window->screen)) - alloc->x;
       struts[STRUT_RIGHT_START_Y] = alloc->y;
       struts[STRUT_RIGHT_END_Y] = alloc->y + alloc->height - 1;
     }
@@ -1913,7 +1933,8 @@ panel_window_display_layout_debug (GtkWidget *widget)
     {
       screen = gdk_display_get_screen (display, n);
       g_string_append_printf (str, "screen-%d[%p]=[%d,%d]", n, screen,
-          gdk_screen_get_width (screen), gdk_screen_get_height (screen));
+                              WidthOfScreen (gdk_x11_screen_get_xscreen (screen)),
+                              HeightOfScreen (gdk_x11_screen_get_xscreen (screen)));
 
       if (panel_debug_has_domain (PANEL_DEBUG_DISPLAY_LAYOUT))
         {

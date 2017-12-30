@@ -395,9 +395,11 @@ directory_menu_plugin_configure_plugin_icon_chooser (GtkWidget           *button
                                          _("OK"), GTK_RESPONSE_ACCEPT,
                                          NULL);
   gtk_dialog_set_default_response (GTK_DIALOG (chooser), GTK_RESPONSE_ACCEPT);
+#if !GTK_CHECK_VERSION (3, 0, 0)
   gtk_dialog_set_alternative_button_order (GTK_DIALOG (chooser),
                                            GTK_RESPONSE_ACCEPT,
                                            GTK_RESPONSE_CANCEL, -1);
+#endif
 
   if (!panel_str_is_empty (plugin->icon_name))
   exo_icon_chooser_dialog_set_icon (EXO_ICON_CHOOSER_DIALOG (chooser), plugin->icon_name);

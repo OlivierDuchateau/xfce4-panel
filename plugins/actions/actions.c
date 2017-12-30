@@ -863,7 +863,7 @@ actions_plugin_action_dbus_can (GDBusProxy  *proxy,
                                    G_DBUS_CALL_FLAGS_NONE,
                                    -1,
                                    NULL,
-                                   error);
+                                   &error);
 
   if (G_LIKELY (retval))
     {
